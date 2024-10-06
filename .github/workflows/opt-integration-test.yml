@@ -1,0 +1,250 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+#concurrency:
+#  group: test-${{ github.head_ref || github.run_id }}
+#  cancel-in-progress: true
+#          - 'kindest/node:v1.21.10'
+# https://github.com/actions/runner-images/issues/2840#issuecomment-790492173
+# du -sh /*        2> /dev/null | sort -rh  2> /dev/null | head
+# du -h -d2 /usr   2> /dev/null | sort -rh  2> /dev/null | head
+# delete libraries for Android (12G), PowerShell (1.3G), Swift (1.7G)
+# for debug Download the image directly first, then adjust it to active build
+#ROOT_DIR=./linkis-dist/
+#MIRRORS="ghcr.io"
+#TAG="dev"
+#docker pull ${MIRRORS}/apache/linkis/linkis-ldh:${TAG}
+#docker pull ${MIRRORS}/apache/linkis/linkis:${TAG}
+#docker pull ${MIRRORS}/apache/linkis/linkis-web:${TAG}
+#docker tag  ${MIRRORS}/apache/linkis/linkis:${TAG} linkis:dev
+#docker tag  ${MIRRORS}/apache/linkis/linkis-web:${TAG} linkis-web:dev
+#docker tag  ${MIRRORS}/apache/linkis/linkis-ldh:${TAG} linkis-ldh:dev
+#show image list
+#show linkis pod logs
+#POD_NAME=`kubectl get pods -n linkis -l app.kubernetes.io/instance=linkis-demo-cg-linkismanager -o jsonpath='{.items[0].metadata.name}'`
+#kubectl logs -n linkis  ${POD_NAME} -f --tail=10000
+#POD_NAME=`kubectl get pods -n linkis -l app.kubernetes.io/instance=linkis-demo-cg-engineconnmanager -o jsonpath='{.items[0].metadata.name}'`
+#kubectl logs -n linkis  ${POD_NAME} -f --tail=10000
+# Enable port-forward
+# Show port-forward list
+# Check if the web service is available
+# Execute test by linkis-cli
+#todo
+#kubectl exec -it -n linkis  ${POD_NAME} -- bash -c " \
+#sh /opt/linkis/bin/linkis-cli -engineType hive-3.1.3 -codeType hql -code   'show databases' "
+#kubectl exec -it -n linkis  ${POD_NAME} -- bash -c " \
+#sh /opt/linkis/bin/linkis-cli -engineType spark-3.2.1 -codeType sql -code   'show databases' "
+
+name: Modified Integration Test
+env:
+  KIND_CONFIG_PATH: ./linkis-dist/helm/scripts/resources/kind-cluster.yaml
+  KIND_CLUSTER_NAME: test-helm
+  MAVEN_OPTS: -Dhttp.keepAlive=false -Dmaven.wagon.http.pool=false -Dmaven.wagon.http.retryHandler.class=standard
+    -Dmaven.wagon.http.retryHandler.count=3 -Dmaven.wagon.httpconnectionManager.ttlSeconds=120
+jobs:
+  integration-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version:
+        - 16.0.0
+        kubernetes-version:
+        - kindest/node:v1.23.4
+    timeout-minutes: 90
+    env:
+      TAG: ${{ github.sha }}
+      SKIP_TEST: true
+      HUB: ghcr.io/apache/linkis
+      LINKIS_VERSION: 1.6.0
+    steps:
+    - name: Setup Python 3.10
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+    - name: Install dependencies
+      run: |-
+        python -m pip install --upgrade pip
+        pip install inotify
+    - name: Run inotifywait
+      run: |-
+        python3 -c "
+        import inotify.adapters
+        import inotify.constants
+        import os
+        from datetime import datetime, timezone
+        with open('/home/runner/inotifywait-log-integration-test (${{ matrix.node-version }}, ${{ matrix.kubernetes-version }}).csv', 'w') as log_file:
+          i = inotify.adapters.InotifyTree('/home/runner/work/linkis/linkis', inotify.constants.IN_CREATE | inotify.constants.IN_ACCESS)
+          for event in i.event_gen(yield_nones=False):
+            (_, type_names, path, filename) = event
+            now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f') + 'Z'
+            events = ','.join(type_names)
+            log_file.write(f'{now};{path};{filename};{events}\n')
+            log_file.flush()
+            os.fsync(log_file.fileno())
+        " &
+    - name: Free up disk space
+      run: |-
+        # https://github.com/actions/runner-images/issues/2840#issuecomment-790492173
+        # du -sh /*        2> /dev/null | sort -rh  2> /dev/null | head
+        # du -h -d2 /usr   2> /dev/null | sort -rh  2> /dev/null | head
+        echo $JAVA_HOME
+        echo "Check free disk space before cleanup."
+        df -h
+        echo "Removing non-essential tools and libraries."
+        sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /usr/local/share/boost
+        # delete libraries for Android (12G), PowerShell (1.3G), Swift (1.7G)
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /usr/local/share/powershell
+        sudo rm -rf /usr/share/swift
+        echo "Check free disk space after cleanup."
+        df -h
+        echo $JAVA_HOME
+    - run: touch optcd-3.txt
+    - name: Prune docker images
+      run: |-
+        echo "Pruning docker images on GH action runner node"
+        docker image prune -a -f
+        docker system df
+        df -h
+    - run: touch optcd-4.txt
+    - name: Checkout
+      uses: actions/checkout@v2
+      with:
+        fetch-depth: 0
+        submodules: true
+    - run: touch optcd-5.txt
+    - name: Set up JDK 8
+      uses: actions/setup-java@v2
+      with:
+        distribution: adopt
+        java-version: 8
+    - run: touch optcd-6.txt
+    - name: Cache local Maven repository
+      uses: actions/cache@v2
+      with:
+        path: ~/.m2/repository
+        key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |-
+          ${{ runner.os }}-maven-
+    - run: touch optcd-7.txt
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v2
+      with:
+        node-version: ${{ matrix.node-version }}
+    - run: touch optcd-8.txt
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v1
+    - run: touch optcd-9.txt
+    - name: Build frontend by node.js
+      run: |-
+        cd linkis-web
+        sed -i "/VUE_APP_MN_CONFIG_PREFIX/d" .env
+        npm install
+        npm run build
+    - run: touch optcd-10.txt
+    - name: Build backend by maven
+      run: |-
+        ./mvnw install -Pdocker -Dmysql.connector.scope=compile -Dmaven.javadoc.skip=true -Dmaven.test.skip=true -Dlinkis.build.web=true -Dlinkis.build.ldh=true
+    - run: touch optcd-11.txt
+    - name: Set up chart-testing
+      uses: ./.github/actions/chart-testing-action
+    - run: touch optcd-12.txt
+    - name: Create Kind cluster
+      uses: ./.github/actions/kind-action
+      with:
+        config: ${{ env.KIND_CONFIG_PATH }}
+        node_image: ${{ matrix.kubernetes-version }}
+        cluster_name: ${{ env.KIND_CLUSTER_NAME }}
+    - run: touch optcd-13.txt
+    - name: Start Linkis Service
+      run: |-
+        docker tag linkis:${{ env.LINKIS_VERSION }}     linkis:dev
+        docker tag linkis-web:${{ env.LINKIS_VERSION }} linkis-web:dev
+        docker tag linkis-ldh:${{ env.LINKIS_VERSION }} linkis-ldh:dev
+
+        # for debug Download the image directly first, then adjust it to active build
+        #ROOT_DIR=./linkis-dist/
+        #MIRRORS="ghcr.io"
+        #TAG="dev"
+        #docker pull ${MIRRORS}/apache/linkis/linkis-ldh:${TAG}
+        #docker pull ${MIRRORS}/apache/linkis/linkis:${TAG}
+        #docker pull ${MIRRORS}/apache/linkis/linkis-web:${TAG}
+        #docker tag  ${MIRRORS}/apache/linkis/linkis:${TAG} linkis:dev
+        #docker tag  ${MIRRORS}/apache/linkis/linkis-web:${TAG} linkis-web:dev
+        #docker tag  ${MIRRORS}/apache/linkis/linkis-ldh:${TAG} linkis-ldh:dev
+
+
+        #show image list
+        docker image ls
+        bash ./linkis-dist/helm/scripts/install-mysql.sh  false\
+            && bash ./linkis-dist/helm/scripts/install-ldh.sh true \
+            && bash ./linkis-dist/helm/scripts/install-charts-with-ldh.sh linkis linkis-demo true
+        n=0
+        sleep 60
+        while (($n<10))
+        do
+          kubectl get pods -A
+          n=$((n+1))
+          sleep 20
+        done
+
+        #show linkis pod logs
+        #POD_NAME=`kubectl get pods -n linkis -l app.kubernetes.io/instance=linkis-demo-cg-linkismanager -o jsonpath='{.items[0].metadata.name}'`
+        #kubectl logs -n linkis  ${POD_NAME} -f --tail=10000
+        #POD_NAME=`kubectl get pods -n linkis -l app.kubernetes.io/instance=linkis-demo-cg-engineconnmanager -o jsonpath='{.items[0].metadata.name}'`
+        #kubectl logs -n linkis  ${POD_NAME} -f --tail=10000
+      shell: bash
+    - run: touch optcd-14.txt
+    - name: Linkis-Cli Test
+      run: |-
+        # Enable port-forward
+        bash ./linkis-dist/helm/scripts/remote-proxy.sh start
+        # Show port-forward list
+        bash ./linkis-dist/helm/scripts/remote-proxy.sh list
+        # Check if the web service is available
+        curl http://127.0.0.1:8088/indexhtml
+
+        # Execute test by linkis-cli
+        POD_NAME=`kubectl get pods -n linkis -l app.kubernetes.io/instance=linkis-demo-mg-gateway -o jsonpath='{.items[0].metadata.name}'`
+        kubectl exec -it -n linkis  ${POD_NAME} -- bash -c " \
+        sh /opt/linkis/bin/linkis-cli -engineType shell-1 -codeType shell -code \"pwd\" ";
+
+        kubectl exec -it -n linkis  ${POD_NAME} -- bash -c " \
+        sh /opt/linkis/bin/linkis-cli -engineType python-python2 -codeType python -code   'print(\"hello\")' "
+
+        #todo
+        #kubectl exec -it -n linkis  ${POD_NAME} -- bash -c " \
+        #sh /opt/linkis/bin/linkis-cli -engineType hive-3.1.3 -codeType hql -code   'show databases' "
+
+        #kubectl exec -it -n linkis  ${POD_NAME} -- bash -c " \
+        #sh /opt/linkis/bin/linkis-cli -engineType spark-3.2.1 -codeType sql -code   'show databases' "
+      shell: bash
+    - run: touch optcd-15.txt
+    - name: Upload inotifywait logs
+      uses: actions/upload-artifact@v4
+      with:
+        name: inotifywait-integration-test (${{ matrix.node-version }}, ${{ matrix.kubernetes-version
+          }})
+        path: /home/runner/inotifywait-log-integration-test (${{ matrix.node-version
+          }}, ${{ matrix.kubernetes-version }}).csv
+    name: integration-test (${{ matrix.node-version }}, ${{ matrix.kubernetes-version
+      }})
+'on':
+- push
+- workflow_dispatch
